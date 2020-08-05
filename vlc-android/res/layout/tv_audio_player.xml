@@ -14,7 +14,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent">
 
-        <ImageView
+        <androidx.appcompat.widget.AppCompatImageView
                 android:id="@+id/background"
                 android:layout_width="0dp"
                 android:layout_height="0dp"
@@ -24,7 +24,7 @@
                 app:layout_constraintRight_toRightOf="parent"
                 app:layout_constraintTop_toTopOf="parent"/>
 
-        <ImageView
+        <androidx.appcompat.widget.AppCompatImageView
                 android:id="@+id/album_cover"
                 android:layout_width="0dp"
                 android:layout_height="0dp"
@@ -117,8 +117,7 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:padding="8dp"
-                android:nextFocusRight="@id/playlist"
-                android:nextFocusDown="@+id/button_shuffle"
+                android:nextFocusRight="@+id/button_previous"
                 android:background="@drawable/ic_circle_audio_player"
                 android:onClick="onClick"
                 app:srcCompat="@drawable/ic_shuffle"

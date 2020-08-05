@@ -1,3 +1,59 @@
+Changes between 3.2.11 and 3.2.12:
+------------------
+
+Application:
+ * Fix TV player button focus state and order
+ * Fix app not launching if installed on SD card on some Android versions
+ * Improve DVD/BD menu support
+ * Fix crash in audio category
+
+
+Changes between 3.2.10 and 3.2.11:
+------------------
+
+Application:
+ * Fix network server edition
+ * Fiw subs not loaded on video playback restoration
+ * Fix loading states in lists when content is empty
+ * TV: Fix video playback restoration
+ * Fix crashes
+
+VLC:
+ * Security fixes
+ * AV1 decoding performances improvement
+
+Changes between 3.2.9 and 3.2.10:
+------------------
+
+Application:
+ * Reduce installation size on Anroid 6+
+ * Do not show controls overlay on seek gestures
+ * Fix crashes
+
+Changes between 3.2.8-1 and 3.2.9:
+------------------
+
+Application:
+ * Fix podcast playback sometimes not saved
+ * Fix crashes
+
+Changes between 3.2.8 and 3.2.8-1:
+------------------
+
+Application:
+ * Fix videos playlist restoration in player
+ * Minor fixes
+
+Changes between 3.2.7.1 and 3.2.8:
+------------------
+
+Application:
+ * Improve browser performances
+ * Misc. crash fixes
+
+VLC:
+ * Improve SMB 2/3 performances
+
 Changes between 3.2.7 and 3.2.7.1:
 ------------------
 

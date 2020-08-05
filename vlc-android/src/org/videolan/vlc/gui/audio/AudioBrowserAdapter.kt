@@ -123,7 +123,7 @@ class AudioBrowserAdapter @JvmOverloads constructor(
     }
 
     override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
-        handler.removeCallbacksAndMessages(null)
+        if (Settings.listTitleEllipsize == 4) handler.removeCallbacksAndMessages(null)
         super.onDetachedFromRecyclerView(recyclerView)
     }
 
@@ -256,6 +256,7 @@ class AudioBrowserAdapter @JvmOverloads constructor(
         }
 
         override fun recycle() {
+            if (Settings.listTitleEllipsize == 4) handler.removeCallbacksAndMessages(null)
             binding.cover = if (cardSize == SHOW_IN_LIST && defaultCover != null) defaultCover else null
             binding.mediaCover.resetFade()
             binding.title.isSelected = false
@@ -295,6 +296,7 @@ class AudioBrowserAdapter @JvmOverloads constructor(
         }
 
         override fun recycle() {
+            if (Settings.listTitleEllipsize == 4) handler.removeCallbacksAndMessages(null)
             defaultCoverCard?.let { binding.cover = it }
             binding.mediaCover.resetFade()
             binding.title.isSelected = false

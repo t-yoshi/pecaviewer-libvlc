@@ -134,6 +134,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
         viewModel.getDescriptionUpdate().observe(this, Observer { pair -> if (pair != null) adapter.notifyItemChanged(pair.first, pair.second) })
         viewModel.loading.observe(this, Observer {
             (activity as? MainActivity)?.refreshing = it
+            updateEmptyView()
         })
     }
 
@@ -486,6 +487,7 @@ abstract class BaseBrowserFragment : MediaBrowserFragment<BrowserModel>(), IRefr
     override fun onMainActionClick(v: View, position: Int, item: MediaLibraryItem) {}
 
     override fun onUpdateFinished(adapter: RecyclerView.Adapter<*>) {
+        if (!isStarted()) return
         restoreMultiSelectHelper()
         swipeRefreshLayout.isRefreshing = false
         handler.sendEmptyMessage(MSG_HIDE_LOADING)

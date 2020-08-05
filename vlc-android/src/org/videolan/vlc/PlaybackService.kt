@@ -75,7 +75,7 @@ private const val TAG = "VLC/PlaybackService"
 @ExperimentalCoroutinesApi
 @ObsoleteCoroutinesApi
 class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOwner {
-    override val coroutineContext = Dispatchers.Main.immediate
+    override val coroutineContext = Dispatchers.Main
     private val dispatcher = ServiceLifecycleDispatcher(this)
 
     lateinit var playlistManager: PlaylistManager
@@ -161,14 +161,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
                 publishState()
                 audioFocusHelper.changeAudioFocus(true)
                 if (!wakeLock.isHeld) wakeLock.acquire()
-                if (!keyguardManager.isKeyguardLocked
-                        && !playlistManager.videoBackground
-                        && !hasRenderer()
-                        && playlistManager.switchToVideo()) {
-                    hideNotification(true)
-                } else {
-                    showNotification()
-                }
+                showNotification()
             }
             MediaPlayer.Event.Paused -> {
                 if (BuildConfig.DEBUG) Log.i(TAG, "MediaPlayer.Event.Paused")
@@ -470,6 +463,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
 
         updateHasWidget()
         if (!this::mediaSession.isInitialized) initMediaSession()
+        if (AndroidUtil.isOOrLater && !isForeground) forceForeground()
 
         val filter = IntentFilter().apply {
             priority = Integer.MAX_VALUE
@@ -536,7 +530,9 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
     }
 
     override fun onTaskRemoved(rootIntent: Intent) {
-        if (settings.getBoolean("audio_task_removed", false)) stopService(Intent(applicationContext, PlaybackService::class.java))
+        if (settings.getBoolean("audio_task_removed", false)) launch {
+            stopService(Intent(applicationContext, PlaybackService::class.java))
+        }
     }
 
     override fun onDestroy() {
@@ -546,7 +542,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
         handler.removeCallbacksAndMessages(null)
         if (this::mediaSession.isInitialized) mediaSession.release()
         //Call it once mediaSession is null, to not publish playback state
-        stop(true)
+        stop(systemExit = true)
 
         unregisterReceiver(receiver)
         playlistManager.onServiceDestroyed()
@@ -566,14 +562,12 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
     private fun forceForeground() {
         val ctx = this@PlaybackService
         NotificationHelper.createNotificationChannels(ctx.applicationContext)
-        val stopped = playlistManager.player.playbackState == PlaybackStateCompat.STATE_STOPPED
-        val notification = if (this::notification.isInitialized && !stopped) notification
+        val notification = if (this::notification.isInitialized) notification
         else NotificationHelper.createPlaybackNotification(ctx, false,
                 ctx.resources.getString(R.string.loading), "", "", null,
                 false, true, mediaSession.sessionToken, sessionPendingIntent)
         startForeground(3, notification)
         isForeground = true
-        if (isVideoPlaying || Settings.showTvUi || stopped) hideNotification(true)
     }
 
     private fun sendStartSessionIdIntent() {
@@ -745,8 +739,8 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
 
     @MainThread
     @JvmOverloads
-    fun stop(systemExit: Boolean = false) {
-        playlistManager.stop(systemExit)
+    fun stop(systemExit: Boolean = false, video: Boolean = false) {
+        playlistManager.stop(systemExit = systemExit, video = video)
     }
 
     private fun initMediaSession() {
@@ -952,7 +946,12 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
 
     private fun loadLastAudioPlaylist() {
         if (AndroidDevices.isAndroidTv) return
-        runOnceReady(Runnable { if (!playlistManager.loadLastPlaylist()) stopService(Intent(applicationContext, PlaybackService::class.java)) })
+        launch {
+            getFromMl { isStarted }
+            if (!playlistManager.loadLastPlaylist()) {
+                stopService(Intent(applicationContext, PlaybackService::class.java))
+            }
+        }
     }
 
     fun loadLastPlaylist(type: Int) {
@@ -1016,7 +1015,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
     @MainThread
     fun load(mediaList: List<AbstractMediaWrapper>, position: Int) = playlistManager.load(mediaList, position)
 
-    private fun updateMediaQueue() = launch {
+    private fun updateMediaQueue() = launch(start = CoroutineStart.UNDISPATCHED) {
         if (!this@PlaybackService::mediaSession.isInitialized) initMediaSession()
         val ctx = this@PlaybackService
         val queue = withContext(Dispatchers.Default) {
@@ -1046,7 +1045,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
      * @param flags LibVLC.MEDIA_* flags
      */
     @JvmOverloads
-    fun playIndex(index: Int, flags: Int = 0) = launch { playlistManager.playIndex(index, flags) }
+    fun playIndex(index: Int, flags: Int = 0) = launch(start = CoroutineStart.UNDISPATCHED) { playlistManager.playIndex(index, flags) }
 
     @MainThread
     fun flush() {
@@ -1110,7 +1109,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
     fun append(mediaList: Array<AbstractMediaWrapper>) = append(mediaList.toList())
 
     @MainThread
-    fun append(mediaList: List<AbstractMediaWrapper>) = launch {
+    fun append(mediaList: List<AbstractMediaWrapper>) = launch(start = CoroutineStart.UNDISPATCHED) {
         playlistManager.append(mediaList)
         onMediaListChanged()
     }
@@ -1255,7 +1254,7 @@ class PlaybackService : MediaBrowserServiceCompat(), CoroutineScope, LifecycleOw
 
     override fun onLoadChildren(parentId: String, result: MediaBrowserServiceCompat.Result<List<MediaBrowserCompat.MediaItem>>) {
         result.detach()
-        launch {
+        launch(start = CoroutineStart.UNDISPATCHED) {
             getFromMl { isStarted }
             sendResults(result, parentId)
         }
