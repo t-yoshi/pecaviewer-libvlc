@@ -202,7 +202,13 @@ class VideoHelper implements IVLCVout.OnNewVideoLayoutListener {
         } else if (mDisplayManager != null && mDisplayManager.getPresentation() != null && mDisplayManager.getPresentation().getWindow() != null) {
             sw = mDisplayManager.getPresentation().getWindow().getDecorView().getWidth();
             sh = mDisplayManager.getPresentation().getWindow().getDecorView().getHeight();
-        } else return;
+        } else {
+			/**
+			*  DecorViewのサイズを元にせず、全画面表示以外もできるようにする。
+			* */
+            sw = mVideoSurfaceFrame.getWidth();
+            sh = mVideoSurfaceFrame.getHeight();
+        }
 
         // sanity check
         if (sw * sh == 0) {
