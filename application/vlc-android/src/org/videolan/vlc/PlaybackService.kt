@@ -43,7 +43,6 @@ import androidx.annotation.StringRes
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.getSystemService
-import androidx.core.net.toUri
 import androidx.core.os.bundleOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -64,6 +63,7 @@ import org.videolan.libvlc.util.AndroidUtil
 import org.videolan.medialibrary.interfaces.Medialibrary
 import org.videolan.medialibrary.interfaces.media.MediaWrapper
 import org.videolan.resources.*
+import org.videolan.resources.util.getFromMl
 import org.videolan.resources.util.launchForeground
 import org.videolan.tools.Settings
 import org.videolan.tools.WeakHandler
@@ -74,10 +74,7 @@ import org.videolan.vlc.gui.helpers.NotificationHelper
 import org.videolan.vlc.gui.helpers.getBitmapFromDrawable
 import org.videolan.vlc.gui.video.PopupManager
 import org.videolan.vlc.gui.video.VideoPlayerActivity
-import org.videolan.vlc.media.MediaSessionBrowser
-import org.videolan.vlc.media.MediaUtils
-import org.videolan.vlc.media.PlayerController
-import org.videolan.vlc.media.PlaylistManager
+import org.videolan.vlc.media.*
 import org.videolan.vlc.util.*
 import org.videolan.vlc.widget.VLCAppWidgetProvider
 import org.videolan.vlc.widget.VLCAppWidgetProviderBlack
@@ -90,6 +87,7 @@ private const val TAG = "VLC/PlaybackService"
 @ExperimentalCoroutinesApi
 @ObsoleteCoroutinesApi
 class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
+    private var position: Long = -1L
     private val dispatcher = ServiceLifecycleDispatcher(this)
 
     internal var enabledActions = PLAYBACK_BASE_ACTIONS
@@ -197,6 +195,7 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
                 }
             }
             MediaPlayer.Event.PositionChanged -> {
+                if (length == 0L) position = (NO_LENGTH_PROGRESS_MAX.toLong() * event.positionChanged).toLong()
                 if (time < 1000L && time < lastTime) publishState()
                 lastTime = time
                 if (widget != 0) updateWidgetPosition(event.positionChanged)
@@ -736,7 +735,7 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
                     val artist = if (metaData == null) mw.artist else metaData.getString(MediaMetadataCompat.METADATA_KEY_ALBUM_ARTIST)
                     val album = if (metaData == null) mw.album else metaData.getString(MediaMetadataCompat.METADATA_KEY_ALBUM)
                     var cover = if (coverOnLockscreen && metaData != null)
-                        metaData.getBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART)
+                        AudioUtil.fetchBitmapFromContentResolver(ctx, metaData.getString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI))
                     else
                         AudioUtil.readCoverBitmap(Uri.decode(mw.artworkMrl), 256)
                     if (cover == null || cover.isRecycled)
@@ -867,12 +866,22 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
                 bob.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, MediaUtils.getMediaAlbum(ctx, media))
             }
             if (coverOnLockscreen) {
-                val cover = AudioUtil.readCoverBitmap(Uri.decode(media.artworkMrl), 512)
-                if (cover?.config != null)
-                //In case of format not supported
-                    bob.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, cover.copy(cover.config, false))
-                else
-                    bob.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, ctx.getBitmapFromDrawable(R.drawable.ic_no_media, 512, 512))
+                val albumArtUri = when {
+                    isSchemeHttpOrHttps(media.artworkMrl) -> {
+                        //ArtworkProvider will cache remote images
+                        ArtworkProvider.buildUri(Uri.Builder()
+                                .appendPath(ArtworkProvider.REMOTE)
+                                .appendQueryParameter(ArtworkProvider.PATH, media.artworkMrl)
+                                .build())
+                    }
+                    else -> {
+                        //The media id may be 0 on resume
+                        val mw = getFromMl { findMedia(media) }
+                        val mediaId = MediaSessionBrowser.generateMediaId(mw)
+                        artworkMap[mediaId] ?: ArtworkProvider.buildMediaUri(mw)
+                    }
+                }
+                bob.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, albumArtUri.toString())
             }
             bob.putLong("shuffle", 1L)
             bob.putLong("repeat", repeatType.toLong())
@@ -943,7 +952,7 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
         }
     }
 
-    private fun notifyTrackChanged() {
+    fun notifyTrackChanged() {
         updateMetadata()
         updateWidget()
         broadcastMetadata()
@@ -1038,7 +1047,11 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
     }
 
     fun loadLastPlaylist(type: Int) {
-        if (!playlistManager.loadLastPlaylist(type)) stopService(Intent(applicationContext, PlaybackService::class.java))
+        if (!playlistManager.loadLastPlaylist(type)) {
+            forceForeground(true)
+            Toast.makeText(this, getString(R.string.resume_playback_error), Toast.LENGTH_LONG).show()
+            stopService(Intent(applicationContext, PlaybackService::class.java))
+        }
     }
 
     fun showToast(text: String, duration: Int, isError: Boolean = false) {
@@ -1102,7 +1115,7 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
             val artworkToUriCache = HashMap<String, Uri>()
             for (media in playlistManager.getMediaList()) {
                 if (!media.artworkMrl.isNullOrEmpty() && isPathValid(media.artworkMrl)) {
-                    val artworkUri = artworkToUriCache.getOrPut(media.artworkMrl, {getFileUri(media.artworkMrl)})
+                    val artworkUri = artworkToUriCache.getOrPut(media.artworkMrl, { ArtworkProvider.buildMediaUri(media) } )
                     val key = MediaSessionBrowser.generateMediaId(media)
                     it[key] = artworkUri
                 }
@@ -1147,8 +1160,17 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
                 for ((position, media) in mediaList.subList(fromIndex, toIndex).withIndex()) {
                     val title: String = media.nowPlaying ?: media.title
                     val mediaId = MediaSessionBrowser.generateMediaId(media)
-                    val iconUri = if (isSchemeHttpOrHttps(media.artworkMrl)) Uri.parse(media.artworkMrl)
-                    else artworkMap[mediaId] ?: MediaSessionBrowser.DEFAULT_TRACK_ICON
+                    val iconUri = when {
+                        isSchemeHttpOrHttps(media.artworkMrl) -> {
+                            //ArtworkProvider will cache remote images
+                            ArtworkProvider.buildUri(Uri.Builder()
+                                    .appendPath(ArtworkProvider.REMOTE)
+                                    .appendQueryParameter(ArtworkProvider.PATH, media.artworkMrl)
+                                    .build())
+                        }
+                        ThumbnailsProvider.isMediaVideo(media) -> ArtworkProvider.buildMediaUri(media)
+                        else -> artworkMap[mediaId] ?: MediaSessionBrowser.DEFAULT_TRACK_ICON
+                    }
                     val mediaDesc = MediaDescriptionCompat.Builder()
                             .setTitle(title)
                             .setSubtitle(MediaUtils.getMediaArtist(ctx, media))
@@ -1318,8 +1340,7 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
     @MainThread
     @JvmOverloads
     fun seek(position: Long, length: Double = this.length.toDouble(), fromUser: Boolean = false) {
-        if (length > 0.0) setPosition((position / length).toFloat())
-        else time = position
+        if (length > 0.0) setPosition((position / length).toFloat()) else setPosition((position.toFloat() / NO_LENGTH_PROGRESS_MAX.toFloat()))
         if (fromUser) {
             publishState(position)
         }
@@ -1392,9 +1413,11 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
      */
 
     override fun onGetRoot(clientPackageName: String, clientUid: Int, rootHints: Bundle?): BrowserRoot? {
+        AccessControl.logCaller(clientUid, clientPackageName)
         return if (Permissions.canReadStorage(this@PlaybackService)) {
             val extras = MediaSessionBrowser.getContentStyle(CONTENT_STYLE_LIST_ITEM_HINT_VALUE, CONTENT_STYLE_LIST_ITEM_HINT_VALUE)
             extras.putBoolean(TABS_OPT_IN_HINT, true)
+            extras.putBoolean(EXTRA_MEDIA_SEARCH_SUPPORTED, true)
             BrowserRoot(MediaSessionBrowser.ID_ROOT, extras)
         } else null
     }
@@ -1403,16 +1426,26 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
         result.detach()
         lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
             awaitMedialibraryStarted()
-            sendResults(result, parentId)
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    result.sendResult(MediaSessionBrowser.browse(applicationContext, parentId))
+                } catch (e: RuntimeException) {
+                    Log.e(TAG, "Failed to load children for $parentId", e);
+                }
+            }
         }
     }
 
-    private fun sendResults(result: Result<List<MediaBrowserCompat.MediaItem>>, parentId: String) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                result.sendResult(MediaSessionBrowser.browse(applicationContext, parentId))
-            } catch (e: RuntimeException) {
-                Log.e(TAG, "Failed to load children for $parentId", e);
+    override fun onSearch(query: String, extras: Bundle?, result: Result<List<MediaBrowserCompat.MediaItem>>) {
+        result.detach()
+        lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            awaitMedialibraryStarted()
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    result.sendResult(MediaSessionBrowser.search(applicationContext, query))
+                } catch (e: RuntimeException) {
+                    Log.e(TAG, "Failed to search for $query", e);
+                }
             }
         }
     }
@@ -1468,7 +1501,7 @@ class PlaybackService : MediaBrowserServiceCompat(), LifecycleOwner {
             }
         }
 
-        return realTime.toInt()
+        return if (length == 0L) position.toInt() else realTime.toInt()
     }
 }
 

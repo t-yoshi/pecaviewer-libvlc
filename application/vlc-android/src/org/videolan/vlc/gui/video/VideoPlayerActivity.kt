@@ -101,10 +101,12 @@ import org.videolan.vlc.gui.helpers.PlayerOptionsDelegate
 import org.videolan.vlc.gui.helpers.UiTools
 import org.videolan.vlc.gui.helpers.hf.StoragePermissionsDelegate
 import org.videolan.vlc.interfaces.IPlaybackSettingsController
+import org.videolan.vlc.media.NO_LENGTH_PROGRESS_MAX
 import org.videolan.vlc.repository.ExternalSubRepository
 import org.videolan.vlc.repository.SlaveRepository
 import org.videolan.vlc.util.*
 import org.videolan.vlc.util.FileUtils
+import org.videolan.vlc.viewmodels.BookmarkModel
 import org.videolan.vlc.viewmodels.PlaylistModel
 import java.lang.Runnable
 import kotlin.math.roundToInt
@@ -120,7 +122,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     lateinit var medialibrary: Medialibrary
     private var videoLayout: VLCVideoLayout? = null
     lateinit var displayManager: DisplayManager
-    private var rootView: View? = null
+    var rootView: View? = null
     var videoUri: Uri? = null
     private var askResume = true
 
@@ -333,6 +335,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
 
     private var optionsDelegate: PlayerOptionsDelegate? = null
 
+    lateinit var bookmarkModel: BookmarkModel
     val isPlaylistVisible: Boolean
         get() = overlayDelegate.playlistContainer.visibility == View.VISIBLE
 
@@ -404,10 +407,13 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         overlayDelegate.playerUiContainer = findViewById(R.id.player_ui_container)
 
         val screenOrientationSetting = Integer.valueOf(settings.getString(SCREEN_ORIENTATION, "99" /*SCREEN ORIENTATION SENSOR*/)!!)
+        val sensor = settings.getBoolean(LOCK_USE_SENSOR, true)
         orientationMode = when (screenOrientationSetting) {
             99 -> PlayerOrientationMode(false)
-            101 -> PlayerOrientationMode(true, if (windowManager.defaultDisplay.rotation == Surface.ROTATION_270) ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
-            102 -> PlayerOrientationMode(true, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+            101 -> PlayerOrientationMode(true, if (sensor) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+            102 -> PlayerOrientationMode(true, if (sensor) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+            103 -> PlayerOrientationMode(true, ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE)
+            98 -> PlayerOrientationMode(true, settings.getInt(LAST_LOCK_ORIENTATION, ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE))
             else -> PlayerOrientationMode(true, getOrientationForLock())
         }
 
@@ -431,6 +437,13 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         // 100 is the value for screen_orientation_start_lock
         try {
             requestedOrientation = getScreenOrientation(orientationMode)
+            //as there is no ActivityInfo.SCREEN_ORIENTATION_SENSOR_REVERSE_LANDSCAPE, now that we are in reverse landscape, enable the sensor if needed
+            if (screenOrientationSetting == 103 && sensor){
+                orientationMode = PlayerOrientationMode(true,ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+                requestedOrientation = getScreenOrientation(orientationMode)
+            }
+
+            if (orientationMode.locked) settings.putSingle(LAST_LOCK_ORIENTATION, requestedOrientation)
         } catch (ignored: IllegalStateException) {
             Log.w(TAG, "onCreate: failed to set orientation")
         }
@@ -474,6 +487,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             }
         }
 
+        bookmarkModel = BookmarkModel.get(this)
         overlayDelegate.playToPause = AnimatedVectorDrawableCompat.create(this, R.drawable.anim_play_pause_video)!!
         overlayDelegate.pauseToPlay = AnimatedVectorDrawableCompat.create(this, R.drawable.anim_pause_play_video)!!
     }
@@ -890,6 +904,8 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         } else if (isShowing && service?.playlistManager?.videoStatsOn?.value == true) {
             //hides video stats if they are displayed
             service?.playlistManager?.videoStatsOn?.postValue(false)
+        } else if (overlayDelegate.isBookmarkShown()) {
+            overlayDelegate.hideBookmarks()
         } else if (isTv && isShowing && !isLocked) {
             overlayDelegate.hideOverlay(true)
         } else {
@@ -1429,6 +1445,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
                 service.setVolume(vol.toFloat().roundToInt())
             }
             overlayDelegate.showVolumeBar(vol, fromTouch)
+            volSave = service.volume
         }
     }
 
@@ -1543,17 +1560,6 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             overlayDelegate.lockScreen()
         overlayDelegate.updateRendererVisibility()
     }
-
-    fun toggleLoop(v: View) = service?.run {
-        if (repeatType == PlaybackStateCompat.REPEAT_MODE_ONE) {
-            overlayDelegate.showInfo(getString(R.string.repeat), 1000)
-            repeatType = PlaybackStateCompat.REPEAT_MODE_NONE
-        } else {
-            repeatType = PlaybackStateCompat.REPEAT_MODE_ONE
-            overlayDelegate.showInfo(getString(R.string.repeat_single), 1000)
-        }
-        true
-    } ?: false
 
     override fun onStorageAccessGranted() {
         handler.sendEmptyMessage(START_PLAYBACK)
@@ -1819,7 +1825,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             } else if (service.hasMedia() && !displayManager.isPrimary) {
                 onPlaying()
             } else {
-                service.loadLastPlaylist(PLAYLIST_TYPE_VIDEO)
+                service.loadLastPlaylist(PLAYLIST_TYPE_VIDEO_RESUME)
             }
             if (itemTitle != null) title = itemTitle
             if (overlayDelegate.isHudRightBindingInitialized()) {
@@ -1890,30 +1896,18 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             defaultWide = !defaultWide
         return if (defaultWide) {
             when (rot) {
-                Surface.ROTATION_0 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                Surface.ROTATION_90 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                Surface.ROTATION_180 ->
-                    // SCREEN_ORIENTATION_REVERSE_PORTRAIT only available since API
-                    // Level 9+
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-                Surface.ROTATION_270 ->
-                    // SCREEN_ORIENTATION_REVERSE_LANDSCAPE only available since API
-                    // Level 9+
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+                Surface.ROTATION_0 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                Surface.ROTATION_90 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                Surface.ROTATION_180 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                Surface.ROTATION_270 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                 else -> 0
             }
         } else {
             when (rot) {
-                Surface.ROTATION_0 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                Surface.ROTATION_90 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                Surface.ROTATION_180 ->
-                    // SCREEN_ORIENTATION_REVERSE_PORTRAIT only available since API
-                    // Level 9+
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
-                Surface.ROTATION_270 ->
-                    // SCREEN_ORIENTATION_REVERSE_LANDSCAPE only available since API
-                    // Level 9+
-                    ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                Surface.ROTATION_0 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                Surface.ROTATION_90 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                Surface.ROTATION_180 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                Surface.ROTATION_270 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 else -> 0
             }
         }
@@ -1942,7 +1936,12 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
     }
 
     fun showAdvancedOptions() {
-        if (optionsDelegate == null) service?.let { optionsDelegate = PlayerOptionsDelegate(this, it) }
+        if (optionsDelegate == null) service?.let {
+            optionsDelegate = PlayerOptionsDelegate(this, it)
+            optionsDelegate!!.setBookmarkClickedListener {
+                overlayDelegate.showBookmarks()
+            }
+        }
         optionsDelegate?.show()
         overlayDelegate.hideOverlay(false)
     }
@@ -1952,6 +1951,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
         orientationMode.orientation = getOrientationForLock()
 
         requestedOrientation = getScreenOrientation(orientationMode)
+        if (orientationMode.locked) settings.putSingle(LAST_LOCK_ORIENTATION, requestedOrientation)
         overlayDelegate.updateOrientationIcon()
     }
 
@@ -2044,6 +2044,7 @@ open class VideoPlayerActivity : AppCompatActivity(), PlaybackService.Callback, 
             handler.post {
                 // delay mediaplayer loading, prevent ANR
                 if (service.volume > 100 && !isAudioBoostEnabled) service.setVolume(100)
+                if (volSave > 100 && service.volume != volSave) service.setVolume(volSave)
             }
             service.addCallback(this)
         } else if (this.service != null) {
@@ -2169,5 +2170,5 @@ fun setConstraintPercent(view: Guideline, percent: Float) {
 
 @BindingAdapter("mediamax")
 fun setProgressMax(view: SeekBar, length: Long) {
-    view.max = length.toInt()
+    view.max =  if (length == 0L) NO_LENGTH_PROGRESS_MAX else length.toInt()
 }
